@@ -1,10 +1,11 @@
 
 import unittest
+
 import numpy as np
 
-from _TYPE_StochasticProcess import ExampleOUProcess
+from _TYPE_Grid import BasicGrid, TabularGrid
 from _TYPE_OptimalTrader import GridTrader
-from _TYPE_Grid import ActionValueGrid
+from _TYPE_StochasticProcess import ExampleOUProcess
 
 
 class OptimalTraderTestCase(unittest.TestCase):
@@ -20,59 +21,76 @@ class OptimalTraderTestCase(unittest.TestCase):
         self.assertIsInstance(trader.process_generate(10), np.ndarray)
 
 
-class ActionValueGridTestCase(unittest.TestCase):
-    def test_grid_init(self):
-        grid = ActionValueGrid()
-        grid.add_nodes({"name": "price1", "type": "continuous", "params": {"min": 0.0, "max": 10.0, "num_grids": 1000}})
-        grid.add_nodes({"name": "action", "type": "discrete", "params": {"min": -5, "max": 5}})
-        grid.add_nodes([
-            {"name": "price2", "type": "continuous", "params": {"min": 0.0, "max": 100.0, "num_grids": 5000}},
-            {"name": "position", "type": "discrete", "params": {"min": -10, "max": 10}, "link": "incremental"}
-        ])
-        grid.initialize_grid([5.5, 55, 10])
+class BasicGridTestCase(unittest.TestCase):
+    def test_getitem(self):
+        nodes = {
+            "action": {
+                "params": {"min": -1, "max": 1}
+            },
+            "maze_x": {
+                "type": "continuous",
+                "params": {"min": 0.0, "max": 10.0, "num_cells": 5}
+            },
+            "maze_y": {
+                "type": "discrete",
+                "params": {"min": 0, "max": 5}
+            }
+        }
+        grid = BasicGrid(nodes)
+        self.assertEqual(grid.table.shape, (5, 6, 3))
+        grid[[5.5, 3]] = [1, 2, 3]
+        self.assertEqual(grid[[5.5, 3]].shape, (3,))
+        self.assertEqual(tuple(grid[[5.5, 3]]), tuple([1, 2, 3]))
+        self.assertEqual(grid[[5.5, 3], 0:1], 2)
+        grid[[2, 4], 1] = 100
+        self.assertEqual(grid[[2, 4], 1], 100)
+        self.assertEqual(np.sum(grid.table), 106)
 
-        # test grid
-        self.assertEqual(grid.grid.shape, (1000, 5000, 21, 11))
-        self.assertEqual(len(grid.action_constraints_to_add), 2)
-        # test constraints
-        self.assertEqual(grid.action_constraints([5.5, 55, 10]), (-5, 0))
-        self.assertEqual(grid.action_constraints([5.5, 55, -10]), (0, 5))
-        # test movers
-        self.assertEqual(len(grid.state_movers), 1)
-        self.assertIn(2, grid.state_movers)
-        self.assertEqual(grid.state_movers[2](3, -4), -1)
-        # test get
-        self.assertEqual(grid.get_value([0.0, 0.0, -10]).shape, (11,))
-        self.assertEqual(grid.get_value([9.99, 99.999, 10], -3, 1).shape, (5,))
-        # test choose
-        grid.epsilon = 0
-        self.assertEqual(grid.choose(), -5)
-        self.assertEqual(grid.current_states[2], 10)
-        self.assertEqual(grid.next_states[2], 5)
-        # test update
-        grid.update([5, 50], 100)
-        self.assertEqual(grid.get_value([5.5, 55, 10], -5), 0.1)
 
+class TabularGridTestCase(unittest.TestCase):
     def test_maze(self):
-        """ test to see if ActionValueGrid is able to solve 1d maze """
-        maze = np.zeros(10)
-        maze[9] = 100  # last cell is the end point
-        q_table = ActionValueGrid()
-        q_table.add_nodes([
-            {"name": "location", "type": "discrete", "params": {"min": 0, "max": 9}, "link": "incremental"},
-            {"name": "action", "type": "discrete", "params": {"min": -1, "max": 1}}
-        ])
-        q_table.initialize_grid([0])
-        check_bounds = 0
+        specs = {
+            "action": {
+                "params": {"min": -1, "max": 1}
+            },
+            "maze": {
+                "type": "discrete",
+                "params": {"min": 0, "max": 5},
+                "link": "incremental"
+            }
+        }
+        q_table = TabularGrid()
+        q_table.add_specs(specs)
+        q_table.set_current_states({
+            "maze": 0
+        })
+
+        maze = np.zeros(6)
+        maze[5] = 10
+
+        # test constraints
+        self.assertEqual(q_table.get_action_bounds([3]), (-1, 1))
+        self.assertEqual(q_table.get_action_bounds([0]), (0, 1))
+        self.assertEqual(q_table.get_action_bounds([5]), (-1, 0))
+
+        # test choose
+        actions = []
+        for _ in range(100):
+            actions.append(q_table.choose())
+        self.assertLessEqual(np.max(actions), 1)
+        self.assertGreaterEqual(np.min(actions), -1)
+
         q_table.alpha, q_table.gamma = 0.1, 0.9
-        for _ in range(10000):
-            q_table.current_states = [np.random.randint(0, 10)]
+        check_pos = 0
+        for _ in range(5000):
+            q_table.set_current_states({})
             action = q_table.choose()
             pos = q_table.current_states[0] + action
-            check_bounds += not 0 <= pos <= 9
-            q_table.update([], maze[pos])
-        self.assertSequenceEqual(tuple(np.argmax(q_table.grid, 1)), tuple([2] * 9 + [1]))
-        self.assertEqual(check_bounds, 0)
+            q_table.update({}, maze[pos])
+            check_pos += q_table.current_states[0] != pos
+        self.assertSequenceEqual(tuple(np.argmax(q_table.q_table.table, 1)), tuple([2] * 5 + [1]))
+        # check movers
+        self.assertFalse(check_pos)
 
 
 if __name__ == "__main__":

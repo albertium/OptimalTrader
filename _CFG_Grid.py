@@ -1,18 +1,33 @@
 
 import numpy as np
+import math
 
 
+# ----- converters -----
 def continuous_converter(params):
     _min = params["min"]
-    _const = 1 / (params["max"] - _min) * params["num_grids"]
-    return lambda x: np.floor((np.array(x) - _min) * _const).astype(int)
+    _const = 1 / (params["max"] - _min) * params["num_cells"]
+    return lambda x: math.floor((float(x) - _min) * _const)
 
 
 def discrete_converter(params):
     _min = params["min"]
-    return lambda x: (np.array(x) - _min).astype(int)
+    return lambda x: int(x) - _min
 
 
+# ----- generators -----
+def continuous_generator(params):
+    _min, _max = params["min"], params["max"]
+    _const = _max - _min
+    return lambda: _min + _const * np.random.rand()
+
+
+def discrete_generator(params):
+    _min, _max = params["min"], params["max"]
+    return lambda: np.random.randint(_min, _max + 1)
+
+
+# ----- constraints -----
 def incremental_constraint(params):
     _min, _max = params["min"], params["max"]
     return lambda x: (_min - x, _max - x)
@@ -25,14 +40,14 @@ def direct_constraint(params):
 
 node_types = {
     "continuous": {
-        "required_params": ["min", "max", "num_grids"],
-        "dimension_func": lambda params: params["num_grids"],
-        "converter": continuous_converter
+        "dimension_func": lambda params: params["num_cells"],
+        "converter": continuous_converter,
+        "generator": continuous_generator
     },
     "discrete": {
-        "required_params": ["min", "max"],
         "dimension_func": lambda params: params["max"] - params["min"] + 1,
-        "converter": discrete_converter
+        "converter": discrete_converter,
+        "generator": discrete_generator
     }
 }
 
