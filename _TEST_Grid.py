@@ -4,21 +4,19 @@ import unittest
 import numpy as np
 
 from _TYPE_Grid import BasicGrid, TabularGrid
-from _TYPE_OptimalTrader import GridTrader
-from _TYPE_StochasticProcess import ExampleOUProcess
 
 
-class OptimalTraderTestCase(unittest.TestCase):
-    """
-    test _TYPE_OptimalTrader.py
-    """
-
-    def test_if_integer(self):
-        process = ExampleOUProcess()
-        trader = GridTrader(process)
-        trader.initialize_grid(100, 0, 10, -10, 1000, 10000)
-        self.assertIsInstance(trader.process_generate(), np.int64)
-        self.assertIsInstance(trader.process_generate(10), np.ndarray)
+# class OptimalTraderTestCase(unittest.TestCase):
+#     """
+#     test _TYPE_OptimalTrader.py
+#     """
+#
+#     def test_if_integer(self):
+#         process = ExampleOUProcess()
+#         trader = GridTrader(process)
+#         trader.initialize_grid(100, 0, 10, -10, 1000, 10000)
+#         self.assertIsInstance(trader.process_generate(), np.int64)
+#         self.assertIsInstance(trader.process_generate(10), np.ndarray)
 
 
 class BasicGridTestCase(unittest.TestCase):

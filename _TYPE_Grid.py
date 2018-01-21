@@ -31,7 +31,8 @@ class BasicGrid:
                 self.state_dimensions.append(config["dimension_func"](node["params"]))
                 self.state_converters.append(config["converter"](node["params"]))
 
-        self.table = np.zeros(self.state_dimensions + [self.action_dimension])
+        self.shape = tuple(self.state_dimensions + [self.action_dimension])
+        self.table = np.zeros(self.shape)
 
     def __getitem__(self, item):
         if isinstance(item, list):
@@ -165,6 +166,9 @@ class TabularGrid:
         if action is None:
             return self.q_table[states,]
         return self.q_table[states, action]
+
+    def get_average_q_value(self):
+        return np.mean(self.q_table.table)
 
     def _move_states(self, action):
         """ update linked states """

@@ -8,6 +8,7 @@ import abc
 class StochasticProcess:
     def __init__(self, name):
         self.name = name
+        self.feature_callbacks = {}
 
     @abc.abstractclassmethod
     def _generate(self):
@@ -16,6 +17,15 @@ class StochasticProcess:
     @abc.abstractclassmethod
     def generate(self, n=1):
         pass
+
+    def register_feature(self, feature_name, feature_callback):
+        self.feature_callbacks[feature_name] = feature_callback
+
+    def update_features(self, return_list=False):
+        data = self.generate()
+        if return_list:
+            return [func(data) for _, func in self.feature_callbacks.items()]
+        return {name: func(data) for name, func in self.feature_callbacks.items()}
 
     @abc.abstractclassmethod
     def plot(self, n=1):

@@ -1,5 +1,16 @@
 
 import time
+import plotly.offline as offline
+import plotly.graph_objs as go
+
+
+class Check:
+    def __init__(self, tag=""):
+        self.tag = tag
+
+    def __call__(self, *args, **kwargs):
+        if not args[0]:
+            raise ValueError("[%s]: %s" % (self.tag, args[1]))
 
 
 def check(predicate, msg=""):
@@ -29,3 +40,11 @@ def timeit(n_iters=1):
             return result
         return apply
     return wrapper
+
+
+def plot_lines(data, same_plot=True):
+    check(isinstance(data, dict), "plot_lines expects dict as input")
+    traces = []
+    for name, v in data.items():
+        traces.append(go.Scatter(y=v, mode="lines", name=name))
+    offline.plot(traces)
