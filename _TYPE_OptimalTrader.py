@@ -8,10 +8,9 @@ from _TYPE_Grid import TabularGrid
 
 
 class OptimalTrader:
-    def __init__(self, max_trade=5, max_position=10, lot_size=100):
+    def __init__(self, max_trade=5, max_position=10):
         self.max_trade = max_trade
         self.max_position = max_position
-        self.lot_size = lot_size
         self.specs = {
             "action": {
                 "params": {"min": -max_trade, "max": max_trade}
@@ -27,21 +26,21 @@ class OptimalTrader:
         self.q_table = None
 
     @abc.abstractclassmethod
-    def add_process(self, process):
+    def choose(self, price):
         pass
 
     @abc.abstractclassmethod
-    def add_features(self, features):
+    def update(self, rewards):
         pass
 
     @abc.abstractclassmethod
-    def train(self):
+    def trade(self, price):
         pass
 
 
 class UnivariateGridTrader(OptimalTrader):
-    def __init__(self, max_trade=5, max_position=10, lot_size=100):
-        super().__init__(max_trade, max_position, lot_size)
+    def __init__(self, max_trade=5, max_position=10):
+        super().__init__(max_trade, max_position)
         self.check = Check("UniGridTrader")
         self._load_config()
 
@@ -87,6 +86,7 @@ class UnivariateGridTrader(OptimalTrader):
 
     def train(self, n_epochs=100000):
         # pre-run to get rid of NaNs
+        print("Training ... [0%]", end="")
         while np.isnan(self.process.update_features(return_list=True)).any():
             pass
 
@@ -114,10 +114,32 @@ class UnivariateGridTrader(OptimalTrader):
             # monitor
             if (epoch + 1) % 1000 == 0:
                 q_values.append(self.q_table.get_average_q_value())
+                print("\rTraining ... [%d%%]" % (epoch / n_epochs * 100), end="")
+
+        print()
         plot_lines({"average q": q_values})
 
-    def test(self):
-        pass
+    def test(self, n_epochs=10000):
+        current_price = self.process.update_features()
+        current_price["position"] = 0  # set initial position to 0
+        position = 0
+        cash = 0
+        equity = 0
+        equity_curve = []
+        for _ in range(n_epochs):
+            self.q_table.set_current_states(current_price)  # input current price
+            action = self.q_table.choose()
+            position += action
+            new_price = self.process.update_features()  # get new price
+            cash -= action * self.lot_size * current_price["level"]
+            equity += position * self.lot_size * new_price["level"]
+            equity_curve.append(cash + equity)
+            current_price = new_price
+
+        equity_curve = np.array(equity_curve)
+        plot_lines({"Equity": equity_curve})
+        ret = equity_curve[1:] / equity_curve[:-1]
+        print("Sharpe Ratio: %.2f" % (float(np.mean(ret) / np.std(ret))))
 
     def _load_config(self):
         from _CFG_OptimalTrader import filter_type, get_level

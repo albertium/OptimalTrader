@@ -41,10 +41,6 @@ class UnivariateProcess(StochasticProcess):
         pass
 
     def generate(self, n=1):
-        if not isinstance(n, int):
-            raise ValueError("n must be an integer")
-        if n < 1:
-            raise ValueError("n must be at least 1")
         if n == 1:
             return self._generate()
         else:

@@ -1,9 +1,21 @@
 
 
-from _LIB_Core import plot_lines
 import numpy as np
+from _TYPE_OptimalTrader import UnivariateGridTrader
+from _TYPE_StochasticProcess import ExampleOUProcess
 
-y1 = np.arange(10)
-y2 = y1 * 1.1
-data = {"y1": y1, "y2": y2}
-plot_lines(data)
+
+trader = UnivariateGridTrader()
+process = ExampleOUProcess()
+trader.add_process(process)
+# add features
+features = {
+    "level": {
+        "cells": 500,
+        "spec": []
+    }
+}
+trader.add_features(features)
+trader.train(100000)
+trader.q_table.epsilon = 1
+trader.test()
