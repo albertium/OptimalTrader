@@ -1,7 +1,10 @@
 
 import numpy as np
+import time
 import plotly.offline as offline
 import plotly.graph_objs as go
+
+from _LIB_Core import plot_lines
 
 
 class Simulator:
@@ -17,32 +20,57 @@ class Simulator:
         self.lot_size = params.get("lot_size", 100)
         self.kappa = params.get("kappa", 1E-4)
 
-    def train(self, n=100000):
+    def train(self, n_epochs=100000):
+        self._initialize_trader_features()
+
+        q_record = []
         curr_price = self.generator.generate()
-        for _ in range(n):
+        start_time = time.time()
+        for epoch in range(n_epochs):
             prev_position, actions = self.trader.choose(curr_price)  # this allows update multiple actions
             curr_positions = prev_position + actions
             next_price = self.generator.generate()
             dw = curr_positions * (next_price - curr_price) - (self.commission + self.spread) * np.abs(actions)
             reward = dw - 0.5 * self.kappa * dw * dw
-            self.trader.update(reward)
+            self.trader.update(next_price, reward)
             curr_price = next_price
 
+            if (epoch + 1) % 1000 == 0:
+                q_value = self.trader.get_average_q_value()
+                print("\rTraining [%d%%] ... %f (q value)" % (epoch / n_epochs * 100, q_value), end="", flush=True)
+                q_record.append(q_value)
+        print()
+        end_time = time.time()
+        print("Training used time:  %.3f s" % (end_time - start_time))
+        plot_lines({"q value": q_record}, "Convergence")
+
     def test(self, n=10000):
+        self._initialize_trader_features()
+
         curr_price = self.generator.generate()
         prev_position = 0
         record = np.zeros(n)
+        cost = np.zeros(n)
         for epoch in range(n):
-            curr_position = self.trader.trade(curr_price)
+            if epoch == 0:
+                curr_position = self.trader.trade(curr_price, 0)
+            else:
+                curr_position = self.trader.trade(curr_price)
             next_price = self.generator.generate()
-            dw = curr_position * (next_price - curr_price) \
-                - (self.commission + self.spread) * np.abs(curr_position - prev_position)
-            record[epoch] = dw
+            record[epoch] = curr_position * (next_price - curr_price)
+            cost[epoch] = -(self.commission + self.spread) * np.abs(curr_position - prev_position)
 
             curr_price = next_price
             prev_position = curr_position
 
-        self.record = Performance(record)
+        self.record = DetailPerformance(record, cost)
+
+    def _initialize_trader_features(self) -> None:
+        if self.trader.pre_run_lags > 0:
+            burn_in = self.generator.generate(self.trader.pre_run_lags)
+            if isinstance(burn_in, float):
+                burn_in = [burn_in]
+            self.trader.initialize_features(burn_in)
 
 
 class Performance:
@@ -52,19 +80,33 @@ class Performance:
         # calculate metrics
         self.gross_profit = float(np.sum(np.maximum(0, self.record)))
         self.gross_loss = float(np.sum(np.minimum(0, record)))
+        self.total_pnl = np.sum(record)
         self.percent_win = float(np.sum(record > 0) / len(record))
         max_dd = 0
         running = 0
+        running_sum = 0
+        local_peak = 0
+        peak = 1
         for ret in self.record:
+            running_sum += ret
             running = min(0, running + ret)
-            max_dd = min(max_dd, running)
+            if running_sum > local_peak:
+                local_peak = running_sum
+            if running < max_dd:
+                max_dd = running
+                peak = local_peak
         self.max_drawdown = max_dd
+        if peak == 0:
+            self.peak = 1
+        else:
+            self.peak = peak
+        self.percent_drawdown = -self.max_drawdown / self.peak
 
     def __str__(self):
         to_print = "Total PnL: %.3f\n" % (self.gross_profit + self.gross_loss)
         to_print += "Gross win/loss: %.3f/%.3f\n" % (self.gross_profit, self.gross_loss)
         to_print += "Percent winning: %.1f%%\n" % (self.percent_win * 100)
-        to_print += "Max drawdown: %.3f\n" % self.max_drawdown
+        to_print += "Max drawdown: %.3f (%.2f%%)\n" % (self.max_drawdown, self.percent_drawdown * 100)
         return to_print
 
     def plot(self):
@@ -76,5 +118,28 @@ class Performance:
             "gross_profit": self.gross_profit,
             "gross_loss": self.gross_loss,
             "percent_win": self.percent_win,
-            "max_drawdown": self.max_drawdown
+            "max_drawdown": self.max_drawdown,
+            "percent_drawdown": self.percent_drawdown
         }
+
+
+class DetailPerformance:
+    def __init__(self, record, cost):
+        record, cost = np.array(record), np.array(cost)
+        self.total_record = Performance(record + cost)
+        self.record_only = Performance(record)
+        self.total_pnl = self.total_record.total_pnl
+        self.percent_win = self.total_record.percent_win
+
+    def __str__(self):
+        to_print = "================  Total ================\n"
+        to_print += self.total_record.__str__()
+        to_print += "\n\n================  w/o Cost ================\n"
+        to_print += self.record_only.__str__()
+        return to_print
+
+    def plot(self) -> None:
+        plot_lines({
+            "PnL": np.cumsum(self.total_record.record),
+            "w/o cost": np.cumsum(self.record_only.record)
+        }, "Performance")

@@ -2,6 +2,7 @@
 import time
 import plotly.offline as offline
 import plotly.graph_objs as go
+from plotly import tools
 
 
 class Check:
@@ -42,9 +43,14 @@ def timeit(n_iters=1):
     return wrapper
 
 
-def plot_lines(data, same_plot=True):
+def plot_lines(data: dict, plot_name: str="untitled", same_plot=True) -> None:
     check(isinstance(data, dict), "plot_lines expects dict as input")
-    traces = []
-    for name, v in data.items():
-        traces.append(go.Scatter(y=v, mode="lines", name=name))
-    offline.plot(traces)
+    if same_plot:
+        fig = []
+        for name, v in data.items():
+            fig.append(go.Scatter(y=v, mode="lines", name=name))
+    else:
+        fig = tools.make_subplots(len(data), 1)
+        for name, v in data.items():
+            fig.append_trace(go.Scatter(y=v, mode="lines", name=name))
+    offline.plot(fig, filename=plot_name + ".html")

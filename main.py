@@ -1,21 +1,30 @@
 
 
+from _LIB_Core import timeit
 import numpy as np
-from _TYPE_OptimalTrader import UnivariateGridTrader
 from _TYPE_StochasticProcess import ExampleOUProcess
+from _TYPE_OptimalTrader import UnivariateTabularTrader, UnivariateKerasTrader
+from _TYPE_Simulator import Simulator
 
-
-trader = UnivariateGridTrader()
-process = ExampleOUProcess()
-trader.add_process(process)
-# add features
-features = {
+feature_list = {
     "level": {
         "cells": 500,
         "spec": []
     }
 }
-trader.add_features(features)
-trader.train(100000)
-trader.q_table.epsilon = 1
-trader.test()
+
+# process_type = ExampleOUProcess
+# trader = UnivariateTabularTrader(feature_list, process_type())
+# sim = Simulator(process_type(), trader)
+# sim.train(int(100000))
+# sim.test(20000)
+# print(sim.record)
+# sim.record.plot()
+
+process_type = ExampleOUProcess
+trader = UnivariateKerasTrader()
+sim = Simulator(process_type(), trader)
+sim.train(int(50000))
+sim.test(20000)
+print(sim.record)
+sim.record.plot()

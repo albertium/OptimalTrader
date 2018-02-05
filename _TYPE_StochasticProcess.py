@@ -18,15 +18,6 @@ class StochasticProcess:
     def generate(self, n=1):
         pass
 
-    def register_feature(self, feature_name, feature_callback):
-        self.feature_callbacks[feature_name] = feature_callback
-
-    def update_features(self, return_list=False):
-        data = self.generate()
-        if return_list:
-            return [func(data) for _, func in self.feature_callbacks.items()]
-        return {name: func(data) for name, func in self.feature_callbacks.items()}
-
     @abc.abstractclassmethod
     def plot(self, n=1):
         pass
@@ -55,6 +46,18 @@ class UnivariateProcess(StochasticProcess):
         offline.plot([trace])
 
 
+class ExampleARProcess(UnivariateProcess):
+    def __init__(self):
+        super().__init__("Example AR")
+        self.xt = 0
+        self.phi = 0.5
+        self.sigma = 1
+
+    def _generate(self):
+        self.xt = self.phi * self.xt + self.sigma * np.random.normal()
+        return self.xt
+
+
 class ExampleOUProcess(UnivariateProcess):
     def __init__(self):
         super().__init__("Example OU")
@@ -68,3 +71,13 @@ class ExampleOUProcess(UnivariateProcess):
         self.xt = -self.lam * self.xt + self.sigma * np.random.normal()
         return self.pe * np.exp(self.xt)
 
+
+class BrownianMotion(UnivariateProcess):
+    def __init__(self, sigma=2):
+        super().__init__("Brownian Motion")
+        self.xt = 100
+        self.sigma = sigma
+
+    def _generate(self):
+        self.xt += self.sigma * np.random.normal()
+        return self.xt

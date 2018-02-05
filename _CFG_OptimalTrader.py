@@ -38,6 +38,7 @@ def apply_ret(func, lag):
 
 
 filter_type = {
+    "level": get_level,
     "lag": apply_lag,
     "diff": apply_diff,
     "ret": apply_ret

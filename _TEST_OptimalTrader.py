@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from _CFG_OptimalTrader import apply_lag, apply_diff, get_level
-from _TYPE_OptimalTrader import UnivariateGridTrader
+from _TYPE_OptimalTrader import UnivariateTabularTrader
 from _TYPE_StochasticProcess import ExampleOUProcess
 
 
@@ -35,25 +35,35 @@ class CfgTestCase(unittest.TestCase):
 
 class OptimalTraderTestCase(unittest.TestCase):
     def test_setup(self):
-        trader = UnivariateGridTrader()
-        process = ExampleOUProcess()
-        trader.add_process(process)
-        # add features
         features = {
             "level": {
                 "cells": 500,
                 "spec": []
             }
         }
-        trader.add_features(features)
+        trader = UnivariateTabularTrader(features, ExampleOUProcess())
         self.assertEqual(trader.q_table.q_table.shape, (21, 500, 11))
-        self.assertIsInstance(trader.process.update_features()["level"], float)
+        self.assertEqual(trader._generate_features(123.4), [123.4])
+        self.assertEqual(trader.pre_run_lags, 1)
 
-        # check training outcome
-        start_q_value = trader.q_table.get_average_q_value()
-        trader.train(30000)
-        end_q_value = trader.q_table.get_average_q_value()
-        self.assertGreater(end_q_value, start_q_value)
+        # check choose multiples
+        position, actions = trader.choose(50.5)  # mean of Example OU is 50
+        self.assertEqual(trader.features, [50.5])
+        self.assertTrue(-10 <= position <= 10)
+        self.assertGreaterEqual(len(actions), 6)
+        self.assertEqual(position, trader.position)
+        self.assertTrue((actions == trader.actions).all())
+
+        # check update multiples
+        trader.update(56, np.ones_like(actions))
+        self.assertEqual(trader.features, [56])
+        self.assertEqual(np.sum(trader.q_table.q_table.table) / trader.q_table.alpha, len(actions))
+
+        # check trade
+        action = trader.trade(45, 0)
+        self.assertIsInstance(action, int)
+        self.assertEqual(trader.features, [45])
+        self.assertEqual(trader.position, action)
 
 
 if __name__ == "__main__":

@@ -1,48 +1,74 @@
 
 import numpy as np
+from numpy import ndarray
+import keras
+from collections import deque
+
+from typing import List, Union
+import abc
+
 from _LIB_Core import check, check_components
 
 
 class BasicGrid:
-    """ state only allows single-valued indexing while action allows series indexing """
+    """
+    Contract:
+    1. provide bracket access to the grid [S, A], where A can be a range and S can only be single values
+    2. provide the conversion needed to bridge raw S and internal S
+    3. this is boundary safe (floor or cap out-of-bound indexing)
+    4. this won't implement any constraints on the states or action
+    """
 
-    def __init__(self, nodes):
+    def __init__(self, states: list, action: dict):
+        """
+        :param list states: dimensions will be created according to the ordering of nodes
+        :param dict action: specification for action node
+        """
         self.state_dimensions = []
         self.state_converters = []
+        self.state_bounds = []
 
         self._load_config()
-        self._add_nodes(nodes)
+        self._add_nodes(states, action)
 
     def _load_config(self):
         from _CFG_Grid import node_types
         self.node_types = node_types
 
-    def _add_nodes(self, nodes):
-        check("action" in nodes, "BasicGrid: no action node found")
-        check(len(nodes) > 1, "BasicGrid: no state node found")
+    def _add_nodes(self, state_specs: list, action_spec: dict) -> None:
+        """
+        :param list state_specs: [params, params, ...]
+        :param dict action_spec: specification for action node
+        :return: None
+        """
+        # add states
+        for node in state_specs:
+            config = self.node_types[node["type"]]
+            self.state_dimensions.append(config["dimension_func"](node["params"]))
+            self.state_converters.append(config["converter"](node["params"]))
+            self.state_bounds.append([node["params"]["min"], node["params"]["max"]])
 
-        for name, node in nodes.items():
-            if name == "action":
-                config = self.node_types["discrete"]
-                self.action_dimension = config["dimension_func"](node["params"])
-                self.action_converter = config["converter"](node["params"])
-            else:
-                config = self.node_types[node["type"]]
-                self.state_dimensions.append(config["dimension_func"](node["params"]))
-                self.state_converters.append(config["converter"](node["params"]))
+        # add action
+        config = self.node_types["discrete"]
+        self.action_dimension = config["dimension_func"](action_spec)
+        self.action_converter = config["converter"](action_spec)
 
         self.shape = tuple(self.state_dimensions + [self.action_dimension])
         self.table = np.zeros(self.shape)
 
-    def __getitem__(self, item):
+    def __getitem__(self, item) -> np.ndarray:
+        """
+        :param item: can use either [S, A] or [S]. Action can either be a single value of slice
+        """
         if isinstance(item, list):
-            check(len(item) == len(self.state_converters), "BasicGrid: state dimensions mismatch")
             states, action = item, None
         else:
             check(len(item) == 2, "BasicGrid: expected 1 or 2 arguments")
             states, action = item
 
-        converted = tuple(converter(state) for state, converter in zip(states, self.state_converters))
+        converted = tuple(converter(min(max(state, bound[0]), bound[1]))
+                          for state, converter, bound
+                          in zip(states, self.state_converters, self.state_bounds))
         if action is not None:
             if isinstance(action, slice):
                 lb, ub = self.action_converter(action.start), self.action_converter(action.stop)
@@ -52,15 +78,16 @@ class BasicGrid:
                 return self.table[converted + (idx,)]
         return self.table[converted]
 
-    def __setitem__(self, key, value):
+    def __setitem__(self, key, value) -> None:
         if isinstance(key, list):
-            check(len(key) == len(self.state_converters), "BasicGrid: state dimensions mismatch")
             states, action = key, None
         else:
             check(len(key) == 2, "BasicGrid: expected 1 or 2 arguments")
             states, action = key
 
-        converted = tuple(converter(state) for state, converter in zip(states, self.state_converters))
+        converted = tuple(converter(min(max(state, bound[0]), bound[1]))
+                          for state, converter, bound
+                          in zip(states, self.state_converters, self.state_bounds))
         if action is not None:
             if isinstance(action, slice):
                 lb, ub = self.action_converter(action.start), self.action_converter(action.stop)
@@ -76,22 +103,98 @@ class BasicGrid:
         return self.table.__str__()
 
 
-class TabularGrid:
+class QAgent:
+    """
+    Contract:
+    1. update(R, S, A, S', [A']) - this is the only function that will change the Q table
+    2. choose(S) - this will not change neither the Q table nor the states
+        a. can provide the available moves
+    """
     def __init__(self):
-        # state variables
-        self.state_map = {}
-        self.state_generators = []
-        self.state_movers = {}
-        self.current_states = None
-        self.next_states = None
-        self.no_link_states = set()
+        # training parameters
+        self.alpha = 0.001
+        self.gamma = 0.999
+        self.epsilon = 0.1
+
+    @abc.abstractclassmethod
+    def choose(self, states: list, all_actions: bool) -> Union[int, ndarray]:
+        pass
+
+    @abc.abstractclassmethod
+    def update(self, reward: float, states: list, action: float, new_states: list) -> None:
+        pass
+
+    @abc.abstractclassmethod
+    def get_average_q_value(self) -> float:
+        pass
+
+    @staticmethod
+    def get_action_bounds(max_trade, position_bounds, position):
+        return max(position_bounds[0] - position, -max_trade), min(position_bounds[1] - position, max_trade)
+
+
+class KerasQAgent(QAgent):
+    """
+    Contract:
+    1. discrete actions with bounds
+    2. position with bounds
+    3. update(R, S, A, S', [A']) - this is the only function that will change the Q table
+    4. choose(S) - this will not change neither the Q table nor the states
+        a. can provide the available moves
+    """
+    def __init__(self, num_features=0, max_trades: int=5, position_bounds: list=None):
+        super().__init__()
+
+        self.max_trades = max_trades
+        if position_bounds is None:
+            self.position_bounds = [-10, 10]
+        else:
+            self.position_bounds = position_bounds
+
+        self.q_map = keras.models.Sequential()
+        self.q_map.add(keras.layers.Dense(num_features+2, input_dim=num_features+2, activation="relu"))
+        self.q_map.add(keras.layers.Dense(1))
+        self.q_map.compile(optimizer=keras.optimizers.adam(lr=self.alpha), loss="mse")
+
+        self.ema_q_value = 0
+
+    def choose(self, states: list, all_actions: bool=False) -> Union[int, ndarray]:
+        # last state is position
+        action_lb, action_ub = self.get_action_bounds(self.max_trades, self.position_bounds, states[-1])
+        if all_actions:
+            return np.arange(action_lb, action_ub + 1)
+        if np.random.rand() < self.epsilon:
+            return np.random.randint(action_lb, action_ub + 1)
+        actions = np.arange(action_lb, action_ub + 1)
+        q_values = self.q_map.predict(np.array([states + [action] for action in actions]))
+        return actions[np.argmax(q_values)]
+
+    def update(self, reward: float, states: list, action: float, new_states: list) -> None:
+        """TODO: change states from list to np.array"""
+        action_lb, action_ub = self.get_action_bounds(self.max_trades, self.position_bounds, new_states[-1])
+        next_values = self.q_map.predict(np.array([new_states + [action] for action in range(action_lb, action_ub + 1)]))
+        self.ema_q_value = self.gamma * self.ema_q_value + (1 - self.gamma) * np.mean(next_values)
+        max_value = np.max(next_values)
+        new_value = reward + self.gamma * max_value
+        self.q_map.train_on_batch(np.array([states + [action]]), np.array([new_value]))
+
+    def get_average_q_value(self):
+        return self.ema_q_value
+
+
+class TabularAgent:
+    """
+    Contract:
+    1. allows different policies on action selection and value update
+    2. update(R, S, A, S', [A']) - this is the only function that will change the Q table
+    3. choose(S) - this will not change neither the Q table nor the states
+        a. will provide the available moves
+    """
+    def __init__(self, state_specs: List[dict], action_spec: dict):
         # action variables
-        self.action_bound = None
-        self.action_constraints_to_add = {}
+        self.action_constraints_to_add = []
         self.get_action_bounds = None
-        self.current_action = None
         # other variables
-        self.link_types = {}
         self.q_table = None
 
         # training parameters
@@ -100,100 +203,66 @@ class TabularGrid:
         self.epsilon = 0.1
 
         self._load_config()
+        self._add_specs(state_specs, action_spec)
 
-    def add_specs(self, specs):
-        for name, node in specs.items():
-            # deal with action
-            if name == "action":
-                self.action_constraints_to_add[-1] = self.link_types["direct"]["action_constraint"](node["params"])
-                continue
+    def choose(self, states: list, all_actions: bool=False) -> Union[int, ndarray]:
+        action_lb, action_ub = self.get_action_bounds(states)  # this is created by lumping all the constraints lambda
+        if all_actions:
+            return np.linspace(action_lb, action_ub, action_ub - action_lb + 1)
 
-            # add map and generators
-            self.state_map[name] = len(self.state_map)
-            self.state_generators.append(self.node_types[node["type"]]["generator"](node["params"]))
-            # add link
-            if "link" in node:
-                config = self.link_types[node["link"]]
-                self.action_constraints_to_add[self.state_map[name]] = config["action_constraint"](node["params"])
-                self.state_movers[self.state_map[name]] = config["mover"]
-            else:
-                self.no_link_states.add(name)
-
-        check(len(self.action_constraints_to_add) > 0, "TabularGrid: no action node is found")
-        self.get_action_bounds = self._constrain_all(self.action_constraints_to_add)
-        self.q_table = BasicGrid(specs)
-
-    def set_current_states(self, states):
-        check(isinstance(states, dict), "TabularGrid: expect \"<class 'dict'>\" instead of %s" % type(states))
-        if self.current_states is None:
-            self.current_states = [0] * len(self.state_map)
-        for name, idx in self.state_map.items():
-            if name in states:
-                self.current_states[idx] = states[name]
-            else:
-                self.current_states[idx] = self.state_generators[idx]()
-
-        for state, value in states.items():
-            self.current_states[self.state_map[state]] = value
-
-    def choose(self):
-        check(self.current_states is not None, "TabularGrid: current state not initialized")
-        action_lb, action_ub = self.get_action_bounds(self.current_states)
         if np.random.rand() < self.epsilon:
             action = np.random.randint(action_lb, action_ub + 1)
         else:
-            q_values = self.q_table[self.current_states, action_lb: action_ub + 1]
-            action = np.argmax(q_values).astype(int) + action_lb
-        self._move_states(action)
-        self.current_action = action
+            q_values = self.q_table[states, action_lb: action_ub + 1]
+            action = (np.argmax(q_values).astype(int) + action_lb).item()
         return action
 
-    def update(self, new_states, reward):
+    def update(self, reward: float, states: list, action: float, new_states: list) -> None:
         """ update q value """
-        check(set(new_states.keys()) == self.no_link_states, "TabularGrid: update states don't match")
-        for state, value in new_states.items():
-            self.next_states[self.state_map[state]] = value
-
-        action_lb, action_ub = self.get_action_bounds(self.next_states)
-        max_value = np.max(self.q_table[self.next_states, action_lb: action_ub + 1])
-        new_value = \
-            (1 - self.alpha) * self.q_table[self.current_states, self.current_action] + \
-            self.alpha * (reward + self.gamma * max_value)
-        self.q_table[self.current_states, self.current_action] = new_value
-        self.current_states = self.next_states
-
-    def get_q_value(self, states, action=None):
-        if action is None:
-            return self.q_table[states,]
-        return self.q_table[states, action]
+        action_lb, action_ub = self.get_action_bounds(new_states)
+        max_value = np.max(self.q_table[new_states, action_lb: action_ub + 1])
+        new_value = (1 - self.alpha) * self.q_table[states, action] + self.alpha * (reward + self.gamma * max_value)
+        self.q_table[states, action] = new_value
 
     def get_average_q_value(self):
         return np.mean(self.q_table.table)
-
-    def _move_states(self, action):
-        """ update linked states """
-        self.next_states = [0] * len(self.state_map)
-        for st, mover in self.state_movers.items():
-            self.next_states[st] = mover(action, self.current_states[st])
 
     def _load_config(self):
         from _CFG_Grid import link_types, node_types
         self.link_types = link_types
         self.node_types = node_types
 
+    def _add_specs(self, state_specs: list, action_spec: dict) -> None:
+        """
+        :param list state_specs: [node, node, ...]
+        :param dict action_spec: params
+        :return:
+        """
+        # default action constraint to make sure available action is within action bounds
+        self.action_constraints_to_add.append(self.link_types["direct"]["action_constraint"](action_spec))
+
+        for node in state_specs:
+            if "link" in node:
+                config = self.link_types[node["link"]]
+                self.action_constraints_to_add.append(config["action_constraint"](node["params"]))
+            else:
+                self.action_constraints_to_add.append(None)
+
+        self.get_action_bounds = self._constrain_all(self.action_constraints_to_add)
+        self.q_table = BasicGrid(state_specs, action_spec)
+
     @staticmethod
-    def _constrain_all(constraints):
+    def _constrain_all(constraints: list) -> callable:
         """ to combine all the action constraints """
         if not constraints:
             return None
 
-        def wrapper(current_states):
-            _min, _max = -np.inf, np.inf
-            for st, constraint in constraints.items():
-                if st >= 0:
-                    lb, ub = constraint(current_states[st])
-                else:  # for acton constraint
-                    lb, ub = constraint(0)
+        def wrapper(states: list) -> tuple:
+            _min, _max = constraints[0](0)
+            for state, constraint in zip(states, constraints[1:]):
+                if constraint is None:
+                    continue
+                lb, ub = constraint(state)
                 _min, _max = max(_min, lb), min(_max, ub)
             return _min, _max
         return wrapper

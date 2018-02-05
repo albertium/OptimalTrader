@@ -6,7 +6,7 @@ import math
 # ----- converters -----
 def continuous_converter(params):
     _min = params["min"]
-    _const = 1 / (params["max"] - _min) * params["num_cells"]
+    _const = 1 / (params["max"] - _min) * params["cells"]
     return lambda x: math.floor((float(x) - _min) * _const)
 
 
@@ -40,7 +40,7 @@ def direct_constraint(params):
 
 node_types = {
     "continuous": {
-        "dimension_func": lambda params: params["num_cells"],
+        "dimension_func": lambda params: params["cells"],
         "converter": continuous_converter,
         "generator": continuous_generator
     },

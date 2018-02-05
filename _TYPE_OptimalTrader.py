@@ -1,10 +1,12 @@
 
 import numpy as np
+from numpy import ndarray
+from typing import List, Union, Tuple
 import abc
 
 from _LIB_Core import Check, plot_lines
 from _TYPE_StochasticProcess import UnivariateProcess
-from _TYPE_Grid import TabularGrid
+from _TYPE_Grid import TabularAgent, KerasQAgent
 
 
 class OptimalTrader:
@@ -24,31 +26,89 @@ class OptimalTrader:
 
         self.process = None
         self.q_table = None
+        self.position = 0
+        self.feature_callbacks = []
+        self.pre_run_lags = 0
 
     @abc.abstractclassmethod
     def choose(self, price):
         pass
 
     @abc.abstractclassmethod
-    def update(self, rewards):
+    def update(self, price, rewards):
+        pass
+
+    def trade(self, price: float, position: int=None) -> int:
+        if position is not None:
+            self.position = position
+        return self._trade(price)
+
+    @abc.abstractclassmethod
+    def _trade(self, price: float) -> int:
         pass
 
     @abc.abstractclassmethod
-    def trade(self, price):
+    def get_average_q_value(self) -> float:
         pass
 
+    def initialize_features(self, prices: ndarray) -> None:
+        for price in prices:
+            for callback in self.feature_callbacks:
+                callback(price)
 
-class UnivariateGridTrader(OptimalTrader):
-    def __init__(self, max_trade=5, max_position=10):
-        super().__init__(max_trade, max_position)
-        self.check = Check("UniGridTrader")
+
+class UnivariateTabularTrader(OptimalTrader):
+    """
+    Contract
+    1. update(price, reward) - store new features derived from the price, reward can be None. Should be able to handle
+                                multiple actions update. It updates features
+    2. choose([price]) - uses the stored features to generate all available actions. It updates position and actions
+    3. trade(price) - only return one action
+    """
+    def __init__(self, feature_list: dict, process: UnivariateProcess) -> None:
+        super().__init__(max_trade=5, max_position=10)
+        self.check = Check("UniTabTrader")
         self._load_config()
+        self._add_process(process)  # process should be an object than type since it might contain external data
+        self._add_specs(feature_list)
 
-    def add_process(self, process):
+        self.position = 0
+        self.actions = None
+        self.features = []
+
+    def choose(self, price=None) -> Tuple[int, Union[int, ndarray]]:
+        if price is not None:
+            self.features = self._generate_features(price)
+        self.position = np.random.randint(-self.max_position, self.max_position + 1)
+        self.actions = self.q_table.choose([self.position] + self.features, all_actions=True)
+        return self.position, self.actions
+
+    def update(self, price: float, rewards: Union[float, ndarray]) -> None:
+        new_features = self._generate_features(price)
+        for reward, action in zip(rewards, self.actions):
+            self.q_table.update(reward, [self.position] + self.features, action, [self.position + action] + new_features)
+        self.features = new_features
+
+    def trade(self, price: float, position: int=None) -> int:
+        if position is not None:
+            self.position = position
+        self.features = self._generate_features(price)
+        action = self.q_table.choose([self.position] + self.features)
+        self.position += action
+        return action
+
+    def _trade(self, price: float):
+        pass
+
+    def get_average_q_value(self) -> float:
+        return self.q_table.get_average_q_value()
+
+    def _add_process(self, process: UnivariateProcess) -> None:
+        # only for pre-run
         self.check(isinstance(process, UnivariateProcess), "expects univariate process")
         self.process = process
 
-    def add_features(self, features):
+    def _add_specs(self, feature_list: dict) -> None:
         """
         Example Feature:
 
@@ -57,101 +117,95 @@ class UnivariateGridTrader(OptimalTrader):
 
             "lag5": {"cells": 500, "spec": [["apply_lag", 5]]},
 
-            "diff_1_lag_3": {"cells": 500, "spec": [["apply_diff", 1], ["apply_lag", 3]]}
+            "diff_1_lag_3": {"cells": 500, "spec": [["diff", 1], ["lag", 3]]}
             }
         """
-        self.check(isinstance(features, dict), "expects \"<class 'dict'>\" instead of %s" % type(features))
-        self.check(self.process is not None, "please add process first")
-        for name, spec_info in features.items():
-            self.check("cells" in spec_info, "please specify number of cells for feature " + name)
-            cells = spec_info["cells"]
-            self.check("spec" in spec_info, "please specify spec for feature " + name)
-            spec = spec_info["spec"]
+        cells_list = []
+        pre_run_lags = 0
+        for name, info in feature_list.items():
+            cells_list.append(info["cells"])
+            spec = info["spec"]
 
             # apply filters one by one onto the base filter
-            func = self.filter_base
+            total_lag = 0
+            func = self.filter_type["level"]
             for filter_name, lag in spec:
                 func = self.filter_type[filter_name](func, lag)
-            self.process.register_feature(name, func)  # just for feature not for grid
+                total_lag += lag
+            self.feature_callbacks.append(func)
+            pre_run_lags = max(pre_run_lags, total_lag + 1)
+        self.pre_run_lags = pre_run_lags
 
-            # for grid specification
-            params = self._get_bounds(func, cells)  # decide bounds for the feature through simulation
-            self.specs[name] = {
+        # for grid specification
+        bounds = self._get_bounds()  # decide bounds for the feature through simulation
+
+        # add position as the first state
+        state_specs = [{
+            "type": "discrete",
+            "params": {"min": -self.max_position, "max": self.max_position},
+            "link": "incremental"
+        }]  # type: List[dict]
+
+        # add other features
+        for [lb, ub], cells in zip(bounds, cells_list):
+            state_specs.append({
                 "type": "continuous",
-                "params": params
-            }
+                "params": {"min": lb, "max": ub, "cells": cells}
+            })
 
-        self.q_table = TabularGrid()
-        self.q_table.add_specs(self.specs)
-
-    def train(self, n_epochs=100000):
-        # pre-run to get rid of NaNs
-        print("Training ... [0%]", end="")
-        while np.isnan(self.process.update_features(return_list=True)).any():
-            pass
-
-        # main training loop
-        curr_state = self.process.update_features()
-        kappa = 0.0001
-        tick_size = 0.2
-        q_values = []
-        for epoch in range(n_epochs):
-            # randomize position
-            self.q_table.set_current_states(curr_state)
-            action = self.q_table.choose()
-            position = self._get_position()
-            next_state = self.process.update_features()
-
-            # calculate reward
-            dw = position * (next_state["level"] / curr_state["level"] - 1)
-            # dw -= tick_size * action + tick_size / self.lot_size * action * action
-            reward = dw - 0.5 * kappa * dw * dw
-
-            # update q value
-            self.q_table.update(next_state, reward)
-            curr_state = next_state
-
-            # monitor
-            if (epoch + 1) % 1000 == 0:
-                q_values.append(self.q_table.get_average_q_value())
-                print("\rTraining ... [%d%%]" % (epoch / n_epochs * 100), end="")
-
-        print()
-        plot_lines({"average q": q_values})
-
-    def test(self, n_epochs=10000):
-        current_price = self.process.update_features()
-        current_price["position"] = 0  # set initial position to 0
-        position = 0
-        cash = 0
-        equity = 0
-        equity_curve = []
-        for _ in range(n_epochs):
-            self.q_table.set_current_states(current_price)  # input current price
-            action = self.q_table.choose()
-            position += action
-            new_price = self.process.update_features()  # get new price
-            cash -= action * self.lot_size * current_price["level"]
-            equity += position * self.lot_size * new_price["level"]
-            equity_curve.append(cash + equity)
-            current_price = new_price
-
-        equity_curve = np.array(equity_curve)
-        plot_lines({"Equity": equity_curve})
-        ret = equity_curve[1:] / equity_curve[:-1]
-        print("Sharpe Ratio: %.2f" % (float(np.mean(ret) / np.std(ret))))
+        self.q_table = TabularAgent(state_specs, {"min": -self.max_trade, "max": self.max_trade})
 
     def _load_config(self):
-        from _CFG_OptimalTrader import filter_type, get_level
+        from _CFG_OptimalTrader import filter_type
         self.filter_type = filter_type
-        self.filter_base = get_level
 
-    def _get_bounds(self, func, num_cells=1000, buffer=0.2, n_epoch=1000):
-        data = [func(self.process.generate()) for _ in range(n_epoch)]
-        _min, _max = np.nanmin(data), np.nanmax(data)
-        _min, _max = _min / (1 + buffer), _max * (1 + buffer)
-        # _step = int((_max - _min) / step)
-        return {"min": _min, "max": _max, "num_cells": num_cells}
+    def _generate_features(self, data: float) -> List[float]:
+        return [func(data) for func in self.feature_callbacks]
 
-    def _get_position(self):
-        return self.q_table.next_states[self.q_table.state_map["position"]]
+    def _get_bounds(self, buffer: float=0.4, n_epoch: int=10000) -> list:
+        data = np.array([self._generate_features(self.process.generate()) for _ in range(n_epoch)]).T
+        output = []
+        for datum in data:
+            _min, _max = np.nanmin(datum), np.nanmax(datum)
+            _min, _max = _min / (1 + buffer), _max * (1 + buffer)
+            output.append([_min, _max])
+        return output
+
+
+class UnivariateKerasTrader(OptimalTrader):
+    def __init__(self):
+        super().__init__()
+        self.q_map = KerasQAgent(num_features=1)
+
+        self.position = 0
+        self.actions = None
+        self.features = []
+        self.storage = []
+        with open("play_back.csv", "w") as f:
+            f.write("reward,price_0,price_1,position,action\n")
+
+    def choose(self, price):
+        self.features = [price]
+        self.position = np.random.randint(-self.max_position, self.max_position + 1)
+        self.actions = self._get_actions()
+        return self.position, self.actions
+
+    def update(self, new_price, rewards):
+        for reward, action in zip(rewards, self.actions):
+            self.q_map.update(reward, self.features + [self.position], action, [new_price, self.position + action])
+            self.storage.append("%f,%f,%f,%d,%d\n" % (reward, self.features[0], new_price, self.position, action))
+        if len(self.storage) > 1000:
+            with open("play_back.csv", "a") as f:
+                f.writelines(self.storage)
+            self.storage = []
+
+    def get_average_q_value(self):
+        return self.q_map.get_average_q_value()
+
+    def _trade(self, price) -> int:
+        return self.q_map.choose([price, self.position])
+
+    def _get_actions(self):
+        lb = max(-self.max_position - self.position, -self.max_trade)
+        ub = min(self.max_position - self.position, self.max_trade)
+        return np.arange(lb, ub)
