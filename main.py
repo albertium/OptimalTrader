@@ -24,7 +24,9 @@ feature_list = {
 process_type = ExampleOUProcess
 trader = UnivariateKerasTrader()
 sim = Simulator(process_type(), trader)
-sim.train(int(50000))
+sim.train(int(30000))
 sim.test(20000)
 print(sim.record)
 sim.record.plot()
+print(trader.q_map.time_many)
+print(trader.q_map.time_replay)

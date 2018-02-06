@@ -180,7 +180,6 @@ class UnivariateKerasTrader(OptimalTrader):
         self.position = 0
         self.actions = None
         self.features = []
-        self.storage = []
         with open("play_back.csv", "w") as f:
             f.write("reward,price_0,price_1,position,action\n")
 
@@ -190,14 +189,13 @@ class UnivariateKerasTrader(OptimalTrader):
         self.actions = self._get_actions()
         return self.position, self.actions
 
-    def update(self, new_price, rewards):
-        for reward, action in zip(rewards, self.actions):
-            self.q_map.update(reward, self.features + [self.position], action, [new_price, self.position + action])
-            self.storage.append("%f,%f,%f,%d,%d\n" % (reward, self.features[0], new_price, self.position, action))
-        if len(self.storage) > 1000:
-            with open("play_back.csv", "a") as f:
-                f.writelines(self.storage)
-            self.storage = []
+    def update(self, new_price, rewards: list):
+        states = np.repeat([self.features + [self.position]], len(rewards), axis=0)
+        new_states = states.copy()
+        new_states[:, -1] += self.actions
+        available_actions = [self._get_actions(position) for position in new_states[:, -1]]
+        # self.q_map.update_many(rewards, states, self.actions, new_states, available_actions)
+        self.q_map.update_with_replay(rewards, states, self.actions, new_states, available_actions)
 
     def get_average_q_value(self):
         return self.q_map.get_average_q_value()
@@ -205,7 +203,9 @@ class UnivariateKerasTrader(OptimalTrader):
     def _trade(self, price) -> int:
         return self.q_map.choose([price, self.position])
 
-    def _get_actions(self):
-        lb = max(-self.max_position - self.position, -self.max_trade)
-        ub = min(self.max_position - self.position, self.max_trade)
-        return np.arange(lb, ub)
+    def _get_actions(self, position=None):
+        if position is None:
+            position = self.position
+        lb = max(-self.max_position - position, -self.max_trade)
+        ub = min(self.max_position - position, self.max_trade)
+        return np.arange(lb, ub + 1)
