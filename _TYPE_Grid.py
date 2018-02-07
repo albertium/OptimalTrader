@@ -8,7 +8,7 @@ from collections import deque
 from typing import List, Union, Tuple
 import abc
 
-from _LIB_Core import check, check_components
+from _LIB_Core import check, Check, Timer
 
 
 class BasicGrid:
@@ -118,7 +118,7 @@ class QAgent:
         self.epsilon = 0.1
 
     @abc.abstractclassmethod
-    def choose(self, states: list, all_actions: bool) -> Union[int, ndarray]:
+    def choose(self, states: list) -> Union[int, ndarray]:
         pass
 
     @abc.abstractclassmethod
@@ -130,33 +130,28 @@ class QAgent:
         pass
 
     @staticmethod
-    def get_action_bounds(max_trade, position_bounds, position: float):
-        return max(position_bounds[0] - position, -max_trade), min(position_bounds[1] - position, max_trade)
+    def get_action_bounds(trade_bounds: tuple, position_bounds: tuple, position: int) -> tuple:
+        return max(position_bounds[0] - position, trade_bounds[0]), min(position_bounds[1] - position, trade_bounds[1])
 
 
 class KerasQAgent(QAgent):
     """
     Contract:
-    1. discrete actions with bounds
-    2. position with bounds
+    1. n discrete actions
+    2. position will be considered as a natural states, bounds should be taken care by trader
     3. update(R, S, A, S', [A']) - this is the only function that will change the Q table
     4. choose(S) - this will not change neither the Q table nor the states
         a. can provide the available moves
+    5. state means single state and states mean multiple states
     """
-    def __init__(self, num_features=0, max_trades: int=5, position_bounds: list=None,
-                 history_len=10000, replay_size=200):
+    def __init__(self, num_states=1, num_actions: int=11, history_len=10000, replay_size=120):
         super().__init__()
 
-        self.max_trades = max_trades
-        if position_bounds is None:
-            self.position_bounds = [-10, 10]
-        else:
-            self.position_bounds = position_bounds
+        self.num_actions = num_actions
 
         self.q_map = keras.models.Sequential()
-        self.q_map.add(keras.layers.Dense(num_features+2, input_dim=num_features+2, activation="relu"))
-        self.q_map.add(keras.layers.Dense(num_features+2, activation="relu"))
-        self.q_map.add(keras.layers.Dense(1))
+        self.q_map.add(keras.layers.Dense(num_states * 5, input_dim=num_states, activation="relu"))
+        self.q_map.add(keras.layers.Dense(self.num_actions))
         self.q_map.compile(optimizer=keras.optimizers.adam(lr=self.alpha), loss="mse")
 
         self.ema_q_value = 0
@@ -169,79 +164,72 @@ class KerasQAgent(QAgent):
         self.replay_size = replay_size
 
         # timing
-        self.time_replay = 0
-        self.time_many = 0
+        self.timer = Timer()
 
-    def choose(self, states: list, all_actions: bool=False) -> Union[int, ndarray]:
-        # last state is position
-        action_lb, action_ub = self.get_action_bounds(self.max_trades, self.position_bounds, states[-1])
-        if all_actions:
-            return np.arange(action_lb, action_ub + 1)
-        if np.random.rand() < self.epsilon:
-            return np.random.randint(action_lb, action_ub + 1)
-        actions = np.arange(action_lb, action_ub + 1)
-        q_values = self.q_map.predict(np.array([states + [action] for action in actions]))
-        return actions[np.argmax(q_values)]
+        self.check = Check("Keras Q Agent")
 
-    def update(self, reward: float, states: list, action: float, new_states: list) -> None:
+    def choose(self, state: ndarray) -> Union[int, ndarray]:
+        return self.q_map.predict(state)
+
+    def update(self, reward: float, state: list, action: float, new_state: list) -> None:
         """TODO: change states from list to np.array"""
-        action_lb, action_ub = self.get_action_bounds(self.max_trades, self.position_bounds, new_states[-1])
-        next_values = self.q_map.predict(np.array([new_states + [action] for action in range(action_lb, action_ub + 1)]))
-        self.ema_q_value = self.gamma * self.ema_q_value + (1 - self.gamma) * np.mean(next_values)
-        max_value = np.max(next_values)
-        new_value = reward + self.gamma * max_value
-        self.q_map.train_on_batch(np.array([states + [action]]), np.array([new_value]))
+        # next_values = self.q_map.predict(np.array([new_states + [action] for  1)]))
+        # self.ema_q_value = self.gamma * self.ema_q_value + (1 - self.gamma) * np.mean(next_values)
+        # max_value = np.max(next_values)
+        # new_value = reward + self.gamma * max_value
+        # self.q_map.train_on_batch(np.array([states + [action]]), np.array([new_value]))
+        pass
 
-    def update_many(self, rewards: ndarray, states: ndarray, actions: ndarray,
-                    new_states: ndarray, available_actions: List[ndarray]) -> None:
-        gaps = [len(actions) for actions in available_actions]
-        new_actions = np.hstack(available_actions).reshape((-1, 1))
-        new_states = np.repeat(new_states, gaps, axis=0)
-        new_state_action = np.hstack([new_states, new_actions])
-        next_values = self.q_map.predict(new_state_action)
-        self.ema_q_value = self.gamma * self.ema_q_value + (1 - self.gamma) * np.mean(next_values)
-        next_values = np.split(np.squeeze(next_values), np.cumsum(gaps[:-1]))
-        max_values = np.hstack([np.max(segment) for segment in next_values])
+    def update_many(self, rewards: ndarray, states: ndarray, actions: ndarray, new_states: ndarray,
+                    action_bounds: List[tuple]) -> None:
+        self.timer._____________________________________START______________________________________("update_many")
+        self.check(states.shape[0] == 1, "states should have only one row")
+        next_values = self.q_map.predict(new_states)
+        max_values = np.array([np.max(q_values[lb: ub + 1]) for q_values, (lb, ub) in zip(next_values, action_bounds)])
+        self.ema_q_value = self.gamma * self.ema_q_value + (1 - self.gamma) * np.mean(max_values)
         new_values = self.gamma * max_values + rewards
-        state_action = np.hstack([states, actions.reshape((-1, 1))])
-        self.q_map.train_on_batch(state_action, new_values)
+        targets = self.q_map.predict(states)
+        targets[:, actions] = new_values
+        self.q_map.train_on_batch(states, targets)
+        self.timer.______________________________________END_______________________________________("update_many")
 
     def update_with_replay(self, rewards: ndarray, states: ndarray, actions: ndarray,
                            new_states: ndarray, available_actions: List[ndarray]) -> None:
-        start_time = time.time()
-        if self.reward_history is None:
-            self.reward_history = rewards
-            self.state_history = states
-            self.new_state_history = new_states
-            self.action_history = actions
-        else:
-            self.reward_history = np.hstack([self.reward_history, rewards])
-            self.state_history = np.vstack([self.state_history, states])
-            self.new_state_history = np.vstack([self.new_state_history, new_states])
-            self.action_history = np.hstack([self.action_history, actions])
-        self.available_action_history += available_actions
-        if len(self.reward_history) > self.history_len:
-            to_delete = self.state_history.shape[0] - self.history_len
-            self.reward_history = self.reward_history[to_delete:]
-            self.state_history = self.state_history[to_delete:, :]
-            self.action_history = self.action_history[to_delete:]
-            self.new_state_history = self.new_state_history[to_delete:, :]
-            del self.available_action_history[:to_delete]
-
-        end_time = time.time()
-        self.time_replay += end_time - start_time
-
-        if len(self.reward_history) > self.replay_size * 5:
-            start_time = time.time()
-            rand_idx = np.random.choice(range(len(self.reward_history)), self.replay_size, replace=False)
-            end_time = time.time()
-            self.time_replay += end_time - start_time
-
-            start_time = time.time()
-            self.update_many(self.reward_history[rand_idx], self.state_history[rand_idx], self.action_history[rand_idx],
-                             self.new_state_history[rand_idx], [self.available_action_history[idx] for idx in rand_idx])
-            end_time = time.time()
-            self.time_many += end_time - start_time
+        # start_time = time.time()
+        # if self.reward_history is None:
+        #     self.reward_history = rewards
+        #     self.state_history = states
+        #     self.new_state_history = new_states
+        #     self.action_history = actions
+        # else:
+        #     self.reward_history = np.hstack([self.reward_history, rewards])
+        #     self.state_history = np.vstack([self.state_history, states])
+        #     self.new_state_history = np.vstack([self.new_state_history, new_states])
+        #     self.action_history = np.hstack([self.action_history, actions])
+        # self.available_action_history += available_actions
+        # if len(self.reward_history) > self.history_len:
+        #     to_delete = self.state_history.shape[0] - self.history_len
+        #     self.reward_history = self.reward_history[to_delete:]
+        #     self.state_history = self.state_history[to_delete:, :]
+        #     self.action_history = self.action_history[to_delete:]
+        #     self.new_state_history = self.new_state_history[to_delete:, :]
+        #     del self.available_action_history[:to_delete]
+        #
+        # end_time = time.time()
+        # self.time_replay += end_time - start_time
+        #
+        # if len(self.reward_history) > self.replay_size * 5:
+        #     start_time = time.time()
+        #     rand_idx = np.random.choice(range(len(self.reward_history)), self.replay_size, replace=False)
+        #     end_time = time.time()
+        #     self.time_replay += end_time - start_time
+        #
+        #     start_time = time.time()
+        #     self.update_many(self.reward_history[rand_idx], self.state_history[rand_idx], self.action_history[rand_idx],
+        #                      self.new_state_history[rand_idx], [self.available_action_history[idx] for idx in rand_idx])
+        #     end_time = time.time()
+        #     self.time_many += end_time - start_time
+        pass
 
     def get_average_q_value(self):
         return self.ema_q_value

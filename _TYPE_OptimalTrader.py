@@ -56,6 +56,11 @@ class OptimalTrader:
             for callback in self.feature_callbacks:
                 callback(price)
 
+    def _get_action_bounds(self, position) -> tuple:
+        lb = max(-self.max_position - position, -self.max_trade)
+        ub = min(self.max_position - position, self.max_trade)
+        return lb, ub
+
 
 class UnivariateTabularTrader(OptimalTrader):
     """
@@ -175,37 +180,35 @@ class UnivariateTabularTrader(OptimalTrader):
 class UnivariateKerasTrader(OptimalTrader):
     def __init__(self):
         super().__init__()
-        self.q_map = KerasQAgent(num_features=1)
-
+        self.q_map = KerasQAgent(num_states=2)
         self.position = 0
         self.actions = None
         self.features = []
-        with open("play_back.csv", "w") as f:
-            f.write("reward,price_0,price_1,position,action\n")
 
     def choose(self, price):
         self.features = [price]
         self.position = np.random.randint(-self.max_position, self.max_position + 1)
-        self.actions = self._get_actions()
+        lb, ub = self._get_action_bounds(self.position)
+        self.actions = np.arange(lb, ub + 1)
         return self.position, self.actions
 
-    def update(self, new_price, rewards: list):
-        states = np.repeat([self.features + [self.position]], len(rewards), axis=0)
-        new_states = states.copy()
+    def update(self, new_price, rewards: ndarray):
+        states = np.array([self.features + [self.position]])
+        new_states = np.repeat(states, len(rewards), axis=0)
         new_states[:, -1] += self.actions
-        available_actions = [self._get_actions(position) for position in new_states[:, -1]]
-        # self.q_map.update_many(rewards, states, self.actions, new_states, available_actions)
-        self.q_map.update_with_replay(rewards, states, self.actions, new_states, available_actions)
+        # lb, ub = self._get_action_bounds(self.position)
+        # rewards[np.logical_or(self.actions < lb, self.actions > ub)] = -999 * self.max_position
+        action_bounds = [tuple(int(bound + self.max_trade) for bound in self._get_action_bounds(position))
+                         for position in new_states[:, -1]]
+        self.q_map.update_many(rewards, states, self.actions + self.max_trade, new_states, action_bounds)
+        # self.q_map.update_with_replay(rewards, states, self.actions, new_states, available_actions)
 
     def get_average_q_value(self):
         return self.q_map.get_average_q_value()
 
-    def _trade(self, price) -> int:
-        return self.q_map.choose([price, self.position])
+    def _trade(self, price):
+        lb, ub = self._get_action_bounds(self.position)
+        q_values = self.q_map.choose(np.array([[price, self.position]]))
+        return np.argmax(q_values[lb + self.max_trade: ub + self.max_trade + 1]) - self.max_trade
 
-    def _get_actions(self, position=None):
-        if position is None:
-            position = self.position
-        lb = max(-self.max_position - position, -self.max_trade)
-        ub = min(self.max_position - position, self.max_trade)
-        return np.arange(lb, ub + 1)
+

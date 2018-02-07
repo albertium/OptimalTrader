@@ -24,9 +24,16 @@ feature_list = {
 process_type = ExampleOUProcess
 trader = UnivariateKerasTrader()
 sim = Simulator(process_type(), trader)
-sim.train(int(30000))
+sim.train(int(100000))
 sim.test(20000)
 print(sim.record)
 sim.record.plot()
-print(trader.q_map.time_many)
-print(trader.q_map.time_replay)
+trader.q_map.timer.show()
+
+batches = [[price, position]
+           for price in [40, 45, 50, 55, 60]
+           for position in range(-10, 11)]
+batches = np.array(batches)
+result = trader.q_map.q_map.predict(batches)
+output = np.hstack([batches, result])
+np.savetxt("cached.csv", output, delimiter=",")

@@ -43,6 +43,25 @@ def timeit(n_iters=1):
     return wrapper
 
 
+class Timer:
+    def __init__(self):
+        self.records = {}
+        self.clock = {}
+
+    def _____________________________________START______________________________________(self, tag: str):
+        self.clock[tag] = time.time()
+
+    def ______________________________________END_______________________________________(self, tag: str):
+        if tag in self.records:
+            self.records[tag] += time.time() - self.clock[tag]
+        else:
+            self.records[tag] = time.time() - self.clock[tag]
+
+    def show(self):
+        for tag, lapse in self.records.items():
+            print("%-15s %ds" % (tag + ":", lapse))
+
+
 def plot_lines(data: dict, plot_name: str="untitled", same_plot=True) -> None:
     check(isinstance(data, dict), "plot_lines expects dict as input")
     if same_plot:
