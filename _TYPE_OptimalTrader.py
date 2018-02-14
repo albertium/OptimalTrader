@@ -196,12 +196,9 @@ class UnivariateKerasTrader(OptimalTrader):
         states = np.array([self.features + [self.position]])
         new_states = np.repeat(states, len(rewards), axis=0)
         new_states[:, -1] += self.actions
-        # lb, ub = self._get_action_bounds(self.position)
-        # rewards[np.logical_or(self.actions < lb, self.actions > ub)] = -999 * self.max_position
         action_bounds = [tuple(int(bound + self.max_trade) for bound in self._get_action_bounds(position))
                          for position in new_states[:, -1]]
-        self.q_map.update_many(rewards, states, self.actions + self.max_trade, new_states, action_bounds)
-        # self.q_map.update_with_replay(rewards, states, self.actions, new_states, available_actions)
+        self.q_map.update(rewards, states, self.actions + self.max_trade, new_states, action_bounds)
 
     def get_average_q_value(self):
         return self.q_map.get_average_q_value()

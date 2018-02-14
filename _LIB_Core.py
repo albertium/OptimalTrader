@@ -52,6 +52,8 @@ class Timer:
         self.clock[tag] = time.time()
 
     def ______________________________________END_______________________________________(self, tag: str):
+        if tag not in self.clock:
+            raise ValueError("tag not exists")
         if tag in self.records:
             self.records[tag] += time.time() - self.clock[tag]
         else:
