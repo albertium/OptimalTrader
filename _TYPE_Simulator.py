@@ -21,6 +21,7 @@ class Simulator:
         self.kappa = params.get("kappa", 1E-4)
 
     def train(self, n_epochs=100000):
+        self.trader.set_learning_decay(n_epochs)
         self._initialize_trader_features()
 
         q_record = []

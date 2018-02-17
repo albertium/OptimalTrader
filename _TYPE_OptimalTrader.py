@@ -10,41 +10,25 @@ from _TYPE_Grid import TabularAgent, KerasQAgent
 
 
 class OptimalTrader:
-    def __init__(self, max_trade=5, max_position=10):
-        self.max_trade = max_trade
-        self.max_position = max_position
-        self.specs = {
-            "action": {
-                "params": {"min": -max_trade, "max": max_trade}
-            },
-            "position": {
-                "type": "discrete",
-                "params": {"min": -max_position, "max": max_position},
-                "link": "incremental"
-            }
-        }
+    def __init__(self, position_bounds=(-10, 10)):
+        self.position_bounds = position_bounds
 
         self.process = None
-        self.q_table = None
+        self.Agent = None
         self.position = 0
         self.feature_callbacks = []
         self.pre_run_lags = 0
 
     @abc.abstractclassmethod
-    def choose(self, price):
+    def set_learning_decay(self, n_epochs):
+        pass
+
+    @abc.abstractclassmethod
+    def trade(self, price, position):
         pass
 
     @abc.abstractclassmethod
     def update(self, price, position, rewards):
-        pass
-
-    def trade(self, price: float, position: int=None) -> int:
-        if position is not None:
-            self.position = position
-        return self._trade(price)
-
-    @abc.abstractclassmethod
-    def _trade(self, price: float) -> int:
         pass
 
     @abc.abstractclassmethod
@@ -55,11 +39,6 @@ class OptimalTrader:
         for price in prices:
             for callback in self.feature_callbacks:
                 callback(price)
-
-    def _get_action_bounds(self, position) -> tuple:
-        lb = max(-self.max_position - position, -self.max_trade)
-        ub = min(self.max_position - position, self.max_trade)
-        return lb, ub
 
 
 class UnivariateTabularTrader(OptimalTrader):
@@ -178,34 +157,29 @@ class UnivariateTabularTrader(OptimalTrader):
 
 
 class UnivariateKerasTrader(OptimalTrader):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, position_bounds=(-10, 10), features: list=()):
+        super().__init__(position_bounds)
         # we use action directly as position here
         self.max_position = 1
         self.q_map = KerasQAgent(num_states=2, num_actions=self.max_position * 2 + 1)
         self.position = 0
-        self.action = None
         self.features = []
+        self.epsilon_decay = 0
 
-    def choose(self, price):
+    def set_learning_decay(self, n_epochs, burn_in=0.7):
+        self.epsilon_decay = (self.q_map.epsilon - self.q_map.epsilon_min) / n_epochs / burn_in
+
+    def trade(self, price, position):
         self.features = [price]
-        new_position = self.q_map.choose(np.array([price, self.position])) - self.max_position
-        self.action = new_position - self.position
-        return self.position, self.action
+        return self.q_map.choose(np.array([price, position])) - self.max_position
 
-    def update(self, new_price, reward: ndarray):
+    def update(self, new_price, new_position, reward: ndarray):
+        self.q_map.epsilon -= self.epsilon_decay
         state = np.array(self.features + [self.position])
-        self.position += self.action
-        new_state = np.array([new_price, self.position])
-        self.q_map.update(reward, state, self.position + self.max_position, new_state)
+        new_state = np.array([new_price, new_position])
+        self.q_map.update(reward, state, new_position + self.max_position, new_state)
+        self.position = new_position
 
     def get_average_q_value(self):
         return self.q_map.get_average_q_value()
-
-    def _trade(self, price):
-        new_position = np.argmax(self.q_map.q_map.predict(np.array([[price, self.position]]))) - self.max_position
-        action = new_position - self.position
-        self.position = new_position
-        return action
-
 

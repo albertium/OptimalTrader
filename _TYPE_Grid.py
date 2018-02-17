@@ -114,7 +114,8 @@ class QAgent:
         # training parameters
         self.alpha = 0.001
         self.gamma = 0.999
-        self.epsilon = 0.1
+        self.epsilon = 1
+        self.epsilon_min = 0.1
 
     @abc.abstractclassmethod
     def choose(self, states: list) -> Union[int, ndarray]:
