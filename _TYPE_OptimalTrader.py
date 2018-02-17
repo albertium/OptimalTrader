@@ -35,7 +35,7 @@ class OptimalTrader:
         pass
 
     @abc.abstractclassmethod
-    def update(self, price, rewards):
+    def update(self, price, position, rewards):
         pass
 
     def trade(self, price: float, position: int=None) -> int:
@@ -180,32 +180,32 @@ class UnivariateTabularTrader(OptimalTrader):
 class UnivariateKerasTrader(OptimalTrader):
     def __init__(self):
         super().__init__()
-        self.q_map = KerasQAgent(num_states=2)
+        # we use action directly as position here
+        self.max_position = 1
+        self.q_map = KerasQAgent(num_states=2, num_actions=self.max_position * 2 + 1)
         self.position = 0
-        self.actions = None
+        self.action = None
         self.features = []
 
     def choose(self, price):
         self.features = [price]
-        self.position = np.random.randint(-self.max_position, self.max_position + 1)
-        lb, ub = self._get_action_bounds(self.position)
-        self.actions = np.arange(lb, ub + 1)
-        return self.position, self.actions
+        new_position = self.q_map.choose(np.array([price, self.position])) - self.max_position
+        self.action = new_position - self.position
+        return self.position, self.action
 
-    def update(self, new_price, rewards: ndarray):
-        states = np.array([self.features + [self.position]])
-        new_states = np.repeat(states, len(rewards), axis=0)
-        new_states[:, -1] += self.actions
-        action_bounds = [tuple(int(bound + self.max_trade) for bound in self._get_action_bounds(position))
-                         for position in new_states[:, -1]]
-        self.q_map.update(rewards, states, self.actions + self.max_trade, new_states, action_bounds)
+    def update(self, new_price, reward: ndarray):
+        state = np.array(self.features + [self.position])
+        self.position += self.action
+        new_state = np.array([new_price, self.position])
+        self.q_map.update(reward, state, self.position + self.max_position, new_state)
 
     def get_average_q_value(self):
         return self.q_map.get_average_q_value()
 
     def _trade(self, price):
-        lb, ub = self._get_action_bounds(self.position)
-        q_values = self.q_map.choose(np.array([[price, self.position]]))
-        return np.argmax(q_values[lb + self.max_trade: ub + self.max_trade + 1]) - self.max_trade
+        new_position = np.argmax(self.q_map.q_map.predict(np.array([[price, self.position]]))) - self.max_position
+        action = new_position - self.position
+        self.position = new_position
+        return action
 
 

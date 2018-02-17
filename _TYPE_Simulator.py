@@ -24,21 +24,27 @@ class Simulator:
         self._initialize_trader_features()
 
         q_record = []
+        dw_record = 0
         curr_price = self.generator.generate()
         start_time = time.time()
+        curr_position = 0
         for epoch in range(n_epochs):
-            prev_position, actions = self.trader.choose(curr_price)  # this allows update multiple actions
-            curr_positions = prev_position + actions
-            next_price = self.generator.generate()
-            dw = curr_positions * (next_price - curr_price) - (self.commission + self.spread) * np.abs(actions)
+            new_position = self.trader.trade(curr_price, curr_position)
+            new_price = self.generator.generate()
+            dw = new_position * (new_price - curr_price) - \
+                 (self.commission + self.spread) * np.abs(new_position - curr_position)
             reward = dw - 0.5 * self.kappa * dw * dw
-            self.trader.update(next_price, reward)
-            curr_price = next_price
+            dw_record += dw
+            self.trader.update(new_price, new_position, reward)
+            curr_price = new_price
+            curr_position = new_position
 
             if (epoch + 1) % 1000 == 0:
                 q_value = self.trader.get_average_q_value()
-                print("\rTraining [%d%%] ... %f (q value)" % (epoch / n_epochs * 100, q_value), end="", flush=True)
+                print("\rTraining [%d%%] ... %f (q value) / %f (pnl)" %
+                      (epoch / n_epochs * 100, q_value, dw_record), end="", flush=True)
                 q_record.append(q_value)
+                dw_record = 0
         print()
         end_time = time.time()
         print("Training used time:  %.3f s" % (end_time - start_time))
@@ -48,20 +54,17 @@ class Simulator:
         self._initialize_trader_features()
 
         curr_price = self.generator.generate()
-        prev_position = 0
+        curr_position = 0
         record = np.zeros(n)
         cost = np.zeros(n)
         for epoch in range(n):
-            if epoch == 0:
-                curr_position = self.trader.trade(curr_price, 0)
-            else:
-                curr_position = self.trader.trade(curr_price)
-            next_price = self.generator.generate()
-            record[epoch] = curr_position * (next_price - curr_price)
-            cost[epoch] = -(self.commission + self.spread) * np.abs(curr_position - prev_position)
+            new_position = self.trader.trade(curr_price, curr_position)
+            new_price = self.generator.generate()
+            record[epoch] = new_position * (new_price - curr_price)
+            cost[epoch] = -(self.commission + self.spread) * np.abs(new_position - curr_position)
 
-            curr_price = next_price
-            prev_position = curr_position
+            curr_price = new_price
+            curr_position = new_position
 
         self.record = DetailPerformance(record, cost)
 

@@ -1,9 +1,8 @@
 
 import numpy as np
 from numpy import ndarray
-import time
+import random
 import keras
-from collections import deque
 
 from typing import List, Union, Tuple
 import abc
@@ -122,7 +121,7 @@ class QAgent:
         pass
 
     @abc.abstractclassmethod
-    def update(self, reward: float, states: list, action: float, new_states: list, action_bounds: list) -> None:
+    def update(self, reward: float, states: list, action: float, new_states: list) -> None:
         pass
 
     @abc.abstractclassmethod
@@ -144,38 +143,50 @@ class KerasQAgent(QAgent):
         a. can provide the available moves
     5. state means single state and states mean multiple states
     """
-    def __init__(self, num_states=1, num_actions: int=11):
+    def __init__(self, num_states=1, num_actions: int=11, memory_size: int=1000, train_size: int=20):
         super().__init__()
 
         self.num_actions = num_actions
 
         self.q_map = keras.models.Sequential()
         self.q_map.add(keras.layers.Dense(num_states * 4, input_dim=num_states, activation="relu"))
-                                          # kernel_initializer="he_normal"))
-        self.q_map.add(keras.layers.Dense(self.num_actions))
+        self.q_map.add(keras.layers.Dense(self.num_actions, activation="linear"))
         self.q_map.compile(optimizer=keras.optimizers.adam(lr=self.alpha), loss="mse")
 
         self.ema_q_value = 0
         self.timer = Timer()
         self.check = Check("Keras Q Agent")
+        self.memory = [()] * memory_size
+        self.memory_size = memory_size
+        self.memory_index = -1
+        self.memory_filled = False
+        self.train_size = train_size
         self.history = []
 
-    def choose(self, state: ndarray) -> Union[int, ndarray]:
-        return self.q_map.predict(state)
+        self.epsilon = 1  # totally random when building memory
 
-    def update(self, rewards: ndarray, states: ndarray, actions: ndarray, new_states: ndarray,
-               action_bounds: List[tuple]) -> None:
+    def choose(self, state: ndarray) -> int:
+        """ expect 1d array """
+        if np.random.random() < self.epsilon:
+            return np.random.randint(self.num_actions)
+        return np.argmax(self.q_map.predict(state[None]))
+
+    def update(self, reward: Union[float, ndarray], state: ndarray, action: Union[int, ndarray], new_state: ndarray):
         self.timer._____________________________________START______________________________________("update_many")
-        self.check(states.shape[0] == 1, "states should have only one row")
-        self.check(rewards.shape[0] == actions.shape[0] == new_states.shape[0] == len(action_bounds), "mismatch")
-        next_values = self.q_map.predict(new_states)
-        max_values = np.array([np.max(q_values[lb: ub + 1]) for q_values, (lb, ub) in zip(next_values, action_bounds)])
-        self.ema_q_value = self.gamma * self.ema_q_value + (1 - self.gamma) * np.mean(max_values)
-        new_values = self.gamma * max_values + rewards
-        targets = self.q_map.predict(states)
-        targets[:, actions] = new_values
-        self.q_map.train_on_batch(states, targets)
-        self.history.append([states, targets])
+        self.memory_index = (self.memory_index + 1) % self.memory_size
+        self.memory[self.memory_index] = (reward, state, action, new_state)
+        if self.memory_index == self.memory_size - 1 and not self.memory_filled:
+            self.memory_filled = True
+            self.epsilon = 0.1  # set exploration back to normal level
+
+        if self.memory_filled:
+            rewards, states, actions, new_states = map(np.array, zip(*random.sample(self.memory, self.train_size)))
+            max_values = np.max(self.q_map.predict(new_states), axis=1)
+            self.ema_q_value = self.gamma * self.ema_q_value + (1 - self.gamma) * np.mean(max_values)
+            targets = self.q_map.predict(states)
+            targets[range(targets.shape[0]), np.squeeze(actions)] = self.gamma * max_values + np.squeeze(rewards)
+            self.q_map.train_on_batch(states, targets)
+            self.history.append([states, targets])
         self.timer.______________________________________END_______________________________________("update_many")
 
     def get_average_q_value(self):
